@@ -21,27 +21,28 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include "crc32.h" // Make sure to include your CRC32 implementation
+#include "xxh32.h"
+#include "crc32.h"
+
+#define XXH32_SEED 0xFF32
 
 /* Configuration */
 #define HEAP_CAPACITY (65536) // 64KB heap size
 #define DEFAULT_ALIGNMENT (8) // Default alignment in bytes
-#define MAX_ALIGNMENT (16)    // Maximum supported alignment
+#define MAX_ALIGNMENT (32)    // Maximum supported alignment
 #define DEBUG_LOGGING (1)     // Set to 0 to disable debug prints
+
+#define SPLIT_THRESHOLD (16)
 
 /**
  * @brief Supported memory alignment options
  */
 typedef enum
 {
-    ALIGN_4 = 4,     /**< 4-byte alignment */
-    ALIGN_8 = 8,     /**< 8-byte alignment */
-    ALIGN_16 = 16,   /**< 16-byte alignment */
-    ALIGN_32 = 32,   /**< 32-byte alignment */
-    ALIGN_64 = 64,   /**< 64-byte alignment */
-    ALIGN_128 = 128, /**< 128-byte alignment */
-    ALIGN_256 = 256, /**< 256-byte alignment */
-    ALIGN_512 = 512, /**< 512-byte alignment */
+    ALIGN_4 = 4,   /**< 4-byte alignment */
+    ALIGN_8 = 8,   /**< 8-byte alignment */
+    ALIGN_16 = 16, /**< 16-byte alignment */
+    ALIGN_32 = 32, /**< 32-byte alignment */
     NO_ALIGNMENT = 0,
 } alignment_t;
 
@@ -83,11 +84,13 @@ void heap_get_stats(size_t *total_size, size_t *used_size,
 /* Internal structures */
 typedef struct __attribute__((packed))
 {
+    void *next_chunk;
+    void *prev_chunk;
     size_t chunk_size; /**< Size of the data chunk (excluding metadata) */
     bool is_allocated; /**< Whether the chunk is currently allocated */
     uint8_t current_alignment;
-    uint32_t crc32; /**< CRC32 checksum for corruption detection */
-    uint8_t padding[MAX_ALIGNMENT - (sizeof(size_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint8_t))];
+    uint32_t checksum; /**< CRC32 checksum for corruption detection */
+    uint8_t padding[MAX_ALIGNMENT - (sizeof(size_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint8_t) + 2 * sizeof(void *))];
 } metadata_t;
 
 /* Static assertions to verify metadata structure */
@@ -114,40 +117,13 @@ static inline size_t align_up(size_t n, size_t align)
 static inline alignment_t calculate_alignment(const void *ptr)
 {
     uintptr_t chunk_data = (uintptr_t)CHUNK_DATA(ptr);
-
-    if (!(chunk_data & (ALIGN_512 - 1)))
+    for (alignment_t align = ALIGN_32; align >= ALIGN_4; align >>= 1)
     {
-        return ALIGN_512;
+        if (!(chunk_data & (align - 1)))
+        {
+            return align;
+        }
     }
-    else if (!(chunk_data & (ALIGN_256 - 1)))
-    {
-        return ALIGN_256;
-    }
-    else if (!(chunk_data & (ALIGN_128 - 1)))
-    {
-        return ALIGN_128;
-    }
-    else if (!(chunk_data & (ALIGN_64 - 1)))
-    {
-        return ALIGN_64;
-    }
-    else if (!(chunk_data & (ALIGN_32 - 1)))
-    {
-        return ALIGN_32;
-    }
-    else if (!(chunk_data & (ALIGN_16 - 1)))
-    {
-        return ALIGN_16;
-    }
-    else if (!(chunk_data & (ALIGN_8 - 1)))
-    {
-        return ALIGN_8;
-    }
-    else if (!(chunk_data & (ALIGN_4 - 1)))
-    {
-        return ALIGN_4;
-    }
-
     return NO_ALIGNMENT;
 }
 
@@ -161,10 +137,12 @@ static inline bool is_within_heap(const void *ptr)
     return ptr >= (void *)HEAP_START && ptr < (void *)HEAP_END;
 }
 
-static inline uint32_t calculate_chunk_crc(const void *ptr)
+static inline uint32_t calculate_chunk_xxh32(const void *ptr)
 {
-    // Only calculate CRC for size and allocation status and current_alignment
-    return crc32((const uint8_t *)ptr, sizeof(size_t) + sizeof(bool) + sizeof(uint8_t));
+#ifdef CRC32
+    return crc32((const uint8_t *)ptr, 2 * sizeof(void *) + sizeof(size_t) + sizeof(bool) + sizeof(uint8_t));
+#endif
+    return xxh32((const uint8_t *)ptr, 2 * sizeof(void *) + sizeof(size_t) + sizeof(bool) + sizeof(uint8_t), XXH32_SEED);
 }
 
 static bool validate_chunk(const metadata_t *chunk)
@@ -173,7 +151,7 @@ static bool validate_chunk(const metadata_t *chunk)
     {
         return false;
     }
-    return calculate_chunk_crc(chunk) == chunk->crc32;
+    return calculate_chunk_checksum(chunk) == chunk->checksum;
 }
 
 static metadata_t *find_previous_chunk(metadata_t *current)
@@ -200,7 +178,7 @@ static void create_free_chunk(metadata_t *chunk, size_t size)
     chunk->chunk_size = size;
     chunk->is_allocated = false;
     chunk->current_alignment = calculate_alignment((const void *)chunk);
-    chunk->crc32 = calculate_chunk_crc(chunk);
+    chunk->checksum = calculate_chunk_checksum(chunk);
 }
 
 /* Implementation of public functions */
@@ -215,7 +193,7 @@ bool heap_init(void)
     initial_metadata->chunk_size = HEAP_CAPACITY - sizeof(metadata_t);
     initial_metadata->is_allocated = false;
     initial_metadata->current_alignment = MAX_ALIGNMENT;
-    initial_metadata->crc32 = calculate_chunk_crc(initial_metadata);
+    initial_metadata->checksum = calculate_chunk_checksum(initial_metadata);
 
     if (DEBUG_LOGGING)
     {
@@ -239,7 +217,9 @@ void *heap_alloc(size_t size, alignment_t alignment)
         return NULL;
     }
 
-    if (alignment != ALIGN_4 && alignment != ALIGN_8 && alignment != ALIGN_16)
+    heap_init();
+
+    if ((alignment & (alignment - 1)) != 0 || alignment > ALIGN_32)
     {
         alignment = DEFAULT_ALIGNMENT;
     }
@@ -263,7 +243,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
             if (prev && !prev->is_allocated)
             {
                 prev->chunk_size += sizeof(metadata_t) + current->chunk_size;
-                prev->crc32 = calculate_chunk_crc(prev);
+                prev->checksum = calculate_chunk_checksum(prev);
                 current = prev;
             }
 
@@ -291,7 +271,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
                 size_t remaining = current->chunk_size - total_size;
 
                 // Split chunk if there's enough space for a new chunk
-                if (remaining >= sizeof(metadata_t) + alignment)
+                if (remaining >= sizeof(metadata_t) + alignment + SPLIT_THRESHOLD)
                 {
                     metadata_t *next_chunk = (metadata_t *)((uint8_t *)current +
                                                             sizeof(metadata_t) + total_size);
@@ -301,7 +281,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
 
                 current->is_allocated = true;
                 current->current_alignment = alignment;
-                current->crc32 = calculate_chunk_crc(current);
+                current->checksum = calculate_chunk_checksum(current);
 
                 if (DEBUG_LOGGING)
                 {
@@ -380,14 +360,14 @@ void heap_free(void *ptr)
 
                 metadata->is_allocated = false;
                 metadata->current_alignment = calculate_alignment((const void *)metadata);
-                metadata->crc32 = calculate_chunk_crc(metadata);
+                metadata->checksum = calculate_chunk_checksum(metadata);
 
                 // Coalesce with next chunk if it's free
                 metadata_t *next = (metadata_t *)NEXT_CHUNK(metadata);
                 if (is_within_heap(next) && validate_chunk(next) && !next->is_allocated)
                 {
                     metadata->chunk_size += sizeof(metadata_t) + next->chunk_size;
-                    metadata->crc32 = calculate_chunk_crc(metadata);
+                    metadata->checksum = calculate_chunk_checksum(metadata);
 
                     if (DEBUG_LOGGING)
                     {
