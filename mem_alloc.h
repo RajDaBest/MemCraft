@@ -84,13 +84,12 @@ void heap_get_stats(size_t *total_size, size_t *used_size,
 /* Internal structures */
 typedef struct __attribute__((packed))
 {
-    void *next_chunk;
     void *prev_chunk;
     size_t chunk_size; /**< Size of the data chunk (excluding metadata) */
     bool is_allocated; /**< Whether the chunk is currently allocated */
     uint8_t current_alignment;
     uint32_t checksum; /**< CRC32 checksum for corruption detection */
-    uint8_t padding[MAX_ALIGNMENT - (sizeof(size_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint8_t) + 2 * sizeof(void *))];
+    uint8_t padding[MAX_ALIGNMENT - (sizeof(size_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(void *))];
 } metadata_t;
 
 /* Static assertions to verify metadata structure */
@@ -173,9 +172,10 @@ static metadata_t *find_previous_chunk(metadata_t *current)
     return prev;
 }
 
-static void create_free_chunk(metadata_t *chunk, size_t size)
+static void create_free_chunk(metadata_t *chunk, size_t size, const void *previous_chunk)
 {
     chunk->chunk_size = size;
+    chunk->prev_chunk = previous_chunk;
     chunk->is_allocated = false;
     chunk->current_alignment = calculate_alignment((const void *)chunk);
     chunk->checksum = calculate_chunk_checksum(chunk);
@@ -191,6 +191,7 @@ bool heap_init(void)
 
     metadata_t *initial_metadata = (metadata_t *)heap;
     initial_metadata->chunk_size = HEAP_CAPACITY - sizeof(metadata_t);
+    initial_metadata->prev_chunk = NULL;
     initial_metadata->is_allocated = false;
     initial_metadata->current_alignment = MAX_ALIGNMENT;
     initial_metadata->checksum = calculate_chunk_checksum(initial_metadata);
@@ -238,9 +239,9 @@ void *heap_alloc(size_t size, alignment_t alignment)
 
         if (!current->is_allocated)
         {
-            // Try to coalesce with previous free chunk
-            metadata_t *prev = find_previous_chunk(current);
-            if (prev && !prev->is_allocated)
+            // try to coalesce with previous free chunk
+            metadata_t *prev = (metadata_t *)current->prev_chunk;
+            if (!prev && !prev->is_allocated)
             {
                 prev->chunk_size += sizeof(metadata_t) + current->chunk_size;
                 prev->checksum = calculate_chunk_checksum(prev);
@@ -275,7 +276,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
                 {
                     metadata_t *next_chunk = (metadata_t *)((uint8_t *)current +
                                                             sizeof(metadata_t) + total_size);
-                    create_free_chunk(next_chunk, remaining - sizeof(metadata_t));
+                    create_free_chunk(next_chunk, remaining - sizeof(metadata_t), (const void *)current);
                     current->chunk_size = total_size;
                 }
 
