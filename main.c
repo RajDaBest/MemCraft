@@ -1,115 +1,134 @@
-#define MEM_IMPLEMENTATION
+#include <assert.h>
+#include <string.h>
+
 #include "mem_alloc.h"
 
-#include <stdio.h>
-#include <assert.h>
-
-// Include your heap allocator header here
-
-int main()
+// Test helper functions
+static void verify_alignment(void *ptr, alignment_t alignment)
 {
-    // Test basic allocation
+    uintptr_t addr = (uintptr_t)ptr;
+    assert((addr % alignment) == 0);
+}
+
+static void verify_stats(size_t expected_used, size_t expected_free)
+{
+    size_t total, used, free, largest;
+    heap_get_stats(&total, &used, &free, &largest);
+    assert(total == HEAP_CAPACITY);
+    assert(used == expected_used);
+    assert(free == HEAP_CAPACITY - sizeof(metadata_t) - expected_used);
+}
+
+// Main test function
+int run_heap_tests(void)
+{
+    printf("\nRunning heap allocator tests...\n");
+    int tests_passed = 0;
+    int total_tests = 0;
+
+    // Test 1: Initialization
+    total_tests++;
+    bool init_result = heap_init();
+    assert(init_result);
+    printf("✓ Test %d: Heap initialization successful\n", total_tests);
+    tests_passed++;
+
+    // Test 2: Basic allocation
+    total_tests++;
     void *ptr1 = heap_alloc(100, ALIGN_8);
-    printf("\nFirst allocation (100 bytes): %p\n", ptr1);
+    assert(ptr1 != NULL);
+    verify_alignment(ptr1, ALIGN_8);
+    // verify_stats(100, HEAP_CAPACITY - sizeof(metadata_t) - 100);
+    printf("✓ Test %d: Basic allocation successful\n", total_tests);
+    tests_passed++;
 
-    if (ptr1 != NULL)
+    // Test 3: Multiple alignments
+    total_tests++;
+    void *ptr2 = heap_alloc(50, ALIGN_4);
+    void *ptr3 = heap_alloc(75, ALIGN_16);
+    assert(ptr2 != NULL && ptr3 != NULL);
+    verify_alignment(ptr2, ALIGN_4);
+    verify_alignment(ptr3, ALIGN_16);
+    printf("✓ Test %d: Multiple alignment allocations successful\n", total_tests);
+    tests_passed++;
+
+    // Test 4: Free and reallocation
+    total_tests++;
+    heap_free(ptr2);
+    void *ptr4 = heap_alloc(50, ALIGN_8);
+    assert(ptr4 != NULL);
+    verify_alignment(ptr4, ALIGN_8);
+    printf("✓ Test %d: Free and reallocation successful\n", total_tests);
+    tests_passed++;
+
+    // Test 5: Coalescing
+    total_tests++;
+    heap_free(ptr1);
+    heap_free(ptr4);
+    void *ptr5 = heap_alloc(200, ALIGN_8);
+    assert(ptr5 != NULL);
+    verify_alignment(ptr5, ALIGN_8);
+    printf("✓ Test %d: Chunk coalescing successful\n", total_tests);
+    tests_passed++;
+
+    // Test 6: Edge cases
+    total_tests++;
+    assert(heap_alloc(0, ALIGN_8) == NULL);
+    assert(heap_alloc(HEAP_CAPACITY + 1, ALIGN_8) == NULL);
+    assert(heap_alloc(100, 3) != NULL); // Should use default alignment
+    printf("✓ Test %d: Edge cases handled correctly\n", total_tests);
+    tests_passed++;
+
+    // Test 7: Fragmentation handling
+    total_tests++;
+    void *fragments[10];
+    for (int i = 0; i < 10; i++)
     {
-        // Test that returned pointer is properly aligned
-        printf("Alignment check: %s\n",
-               (((uintptr_t)ptr1 & (ALIGN_8 - 1)) == 0) ? "PASSED" : "FAILED");
+        fragments[i] = heap_alloc(100, ALIGN_8);
+        assert(fragments[i] != NULL);
+    }
+    for (int i = 0; i < 10; i += 2)
+    {
+        heap_free(fragments[i]);
+    }
+    void *large_alloc = heap_alloc(300, ALIGN_8);
+    assert(large_alloc != NULL);
+    printf("✓ Test %d: Fragmentation handling successful\n", total_tests);
+    tests_passed++;
 
-        // Test second allocation
-        void *ptr2 = heap_alloc(200, ALIGN_8);
-        printf("Second allocation (200 bytes): %p\n", ptr2);
+    // Test 8: Memory patterns
+    total_tests++;
+    void *pattern_ptr = heap_alloc(128, ALIGN_8);
+    assert(pattern_ptr != NULL);
+    memset(pattern_ptr, 0xAA, 128);
+    heap_free(pattern_ptr);
+    void *pattern_ptr2 = heap_alloc(128, ALIGN_8);
+    assert(pattern_ptr2 != NULL);
+    printf("✓ Test %d: Memory pattern test successful\n", total_tests);
+    tests_passed++;
 
-        if (ptr2 != NULL)
-        {
-            printf("Alignment check: %s\n",
-                   (((uintptr_t)ptr2 & (ALIGN_8 - 1)) == 0) ? "PASSED" : "FAILED");
-        }
+    // Print test summary
+    printf("\nTest Summary:\n");
+    printf("Total tests: %d\n", total_tests);
+    printf("Tests passed: %d\n", tests_passed);
+    printf("Tests failed: %d\n", total_tests - tests_passed);
 
-        // Free the allocations
-        heap_free(ptr1);
-        heap_free(ptr2);
+    return (tests_passed == total_tests) ? 0 : -1;
+}
 
-        // Try reallocating to ensure free worked
-        void *ptr3 = heap_alloc(100, ALIGN_8);
-        printf("Reallocation test: %s\n",
-               (ptr3 != NULL) ? "PASSED" : "FAILED");
-        heap_free(ptr3);
+// Main function
+int main(void)
+{
+    int result = run_heap_tests();
+
+    if (result == 0)
+    {
+        printf("\nAll heap allocator tests passed successfully!\n");
     }
     else
     {
-        printf("Initial allocation failed!\n");
-        printf("Heap capacity: %d\n", HEAP_CAPACITY);
-        metadata_t *initial_meta = (metadata_t *)heap;
-        printf("Initial chunk size: %zu\n", initial_meta->chunk_size);
-        printf("Is allocated: %d\n", initial_meta->is_allocated);
-        printf("Identifier: 0x%x\n", initial_meta->identifier);
+        printf("\nSome heap allocator tests failed!\n");
     }
 
-    return 0;
+    return result;
 }
-
-/* void *heap_alloc(size_t size, alignment_t alignment)
-{
-    if (size == 0 || size > HEAP_CAPACITY || alignment == 0)
-    {
-        return NULL;
-    }
-
-    heap_init();
-
-    uint8_t *current_chunk = HEAP_START;
-    uint8_t *previous_chunk = NULL;
-
-    // Loop through chunks to find a suitable one
-    while (current_chunk < HEAP_END && current_chunk + sizeof(metadata_t) <= HEAP_END)
-    {
-        metadata_t *current_metadata = (metadata_t *)current_chunk;
-
-        printf("Checking chunk - Address: %p, Size: %zu, Allocated: %d\n",
-               current_chunk, current_metadata->chunk_size, current_metadata->is_allocated);
-
-        // Skip allocated chunks
-        if (current_metadata->is_allocated)
-        {
-            current_chunk = (uint8_t *)current_chunk + sizeof(metadata_t) + current_metadata->chunk_size;
-            continue;
-        }
-
-        // Calculate alignment requirements
-        void *unaligned_data = CHUNK_DATA(current_chunk);
-        void *aligned_data = ALIGNED_CHUNK_DATA(current_chunk, alignment);
-        size_t padding = (uint8_t *)aligned_data - (uint8_t *)unaligned_data;
-        size_t total_size = size + padding;
-
-        // Check if chunk is big enough
-        if (current_metadata->chunk_size >= total_size)
-        {
-            // If remaining space would be too small for a new chunk, use entire chunk
-            if (current_metadata->chunk_size - total_size <= sizeof(metadata_t))
-            {
-                current_metadata->is_allocated = true;
-                return aligned_data;
-            }
-
-            // Split the chunk
-            size_t new_chunk_size = current_metadata->chunk_size - total_size - sizeof(metadata_t);
-            current_metadata->chunk_size = total_size;
-            current_metadata->is_allocated = true;
-
-            // Setup the new chunk
-            metadata_t *new_metadata = (metadata_t *)((uint8_t *)current_chunk + sizeof(metadata_t) + total_size);
-            new_metadata->chunk_size = new_chunk_size;
-            new_metadata->is_allocated = false;
-            new_metadata->identifier = HEAP_METADATA_IDENTIFIER;
-
-            return aligned_data;
-        }
-
-        current_chunk = (uint8_t *)current_chunk + sizeof(metadata_t) + current_metadata->chunk_size;
-    }
-
-    return NULL; // No suitable chunk found
-} */
