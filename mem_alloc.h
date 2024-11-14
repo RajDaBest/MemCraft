@@ -34,9 +34,14 @@
  */
 typedef enum
 {
-    ALIGN_4 = 4,   /**< 4-byte alignment */
-    ALIGN_8 = 8,   /**< 8-byte alignment */
-    ALIGN_16 = 16, /**< 16-byte alignment */
+    ALIGN_4 = 4,     /**< 4-byte alignment */
+    ALIGN_8 = 8,     /**< 8-byte alignment */
+    ALIGN_16 = 16,   /**< 16-byte alignment */
+    ALIGN_32 = 32,   /**< 32-byte alignment */
+    ALIGN_64 = 64,   /**< 64-byte alignment */
+    ALIGN_128 = 128, /**< 128-byte alignment */
+    ALIGN_256 = 256, /**< 256-byte alignment */
+    ALIGN_512 = 512, /**< 512-byte alignment */
     NO_ALIGNMENT = 0,
 } alignment_t;
 
@@ -110,7 +115,27 @@ static inline alignment_t calculate_alignment(const void *ptr)
 {
     uintptr_t chunk_data = (uintptr_t)CHUNK_DATA(ptr);
 
-    if (!(chunk_data & (ALIGN_16 - 1)))
+    if (!(chunk_data & (ALIGN_512 - 1)))
+    {
+        return ALIGN_512;
+    }
+    else if (!(chunk_data & (ALIGN_256 - 1)))
+    {
+        return ALIGN_256;
+    }
+    else if (!(chunk_data & (ALIGN_128 - 1)))
+    {
+        return ALIGN_128;
+    }
+    else if (!(chunk_data & (ALIGN_64 - 1)))
+    {
+        return ALIGN_64;
+    }
+    else if (!(chunk_data & (ALIGN_32 - 1)))
+    {
+        return ALIGN_32;
+    }
+    else if (!(chunk_data & (ALIGN_16 - 1)))
     {
         return ALIGN_16;
     }
@@ -247,7 +272,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
             void *aligned_data;
             void *data_start = CHUNK_DATA(current);
 
-            if (current->current_alignment == alignment)
+            if (current->current_alignment >= alignment)
             {
                 padding = 0;
                 total_size = size + padding;
