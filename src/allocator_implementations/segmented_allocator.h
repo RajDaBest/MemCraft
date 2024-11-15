@@ -25,6 +25,9 @@ typedef enum
     ALIGN_16 = 16,
     ALIGN_32 = 32,
     ALIGN_64 = 64,
+    ALIGN_MAX = ALIGN_64,
+    ALIGN_DEFAULT = ALIGN_8,
+    ALIGN_SAME = 0,
 } alignment_t;
 
 typedef struct
@@ -37,12 +40,16 @@ typedef struct
     alignment_t current_alignment;
 } metadata_t;
 
-metadata_t free_array[FREE_CAPACITY] = {0};
-metadata_t alloc_array[ALLOC_CAPACITY] = {0};
-size_t free_array_size = 0;
-size_t alloc_array_size = 0;
+static metadata_t free_array[FREE_CAPACITY] = {0};
+static metadata_t alloc_array[ALLOC_CAPACITY] = {0};
+static size_t free_array_size = 0;
+static size_t alloc_array_size = 0;
 
-uint8_t heap[HEAP_CAPACITY] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+static uint8_t heap[HEAP_CAPACITY] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+
+void *heap_alloc(size_t size, alignment_t alignment);
+void heap_free(void *ptr);
+void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment);
 
 static ssize_t search_by_ptr(void *ptr, metadata_t *array, size_t array_size)
 {
@@ -213,7 +220,7 @@ static bool add_into_alloc_array(void *chunk_ptr, void *data_ptr, void *prev_chu
     return add_into_array(chunk, alloc_array, &alloc_array_size, ALLOC_CAPACITY);
 }
 
-void defragment_heap()
+static void defragment_heap()
 {
     bool defragmented;
     do
@@ -335,6 +342,75 @@ void heap_free(void *ptr)
     remove_from_alloc_array(alloc_index);
 
     defragment_heap();
+}
+
+void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment)
+{
+    if (!ptr)
+    {
+        return heap_alloc(new_size, new_alignment);
+    }
+
+    if (!new_size)
+    {
+        heap_free(ptr);
+        return NULL;
+    }
+
+    if (((new_alignment) & (new_alignment - 1)) || (new_alignment > MAX_ALIGNMENT))
+    {
+        new_alignment = DEFAULT_ALIGNMENT;
+    }
+
+    ssize_t ptr_index = search_by_ptr_in_alloc_array(ptr);
+    if (ptr_index < 0)
+    {
+        return NULL;
+    }
+
+    metadata_t *chunk = &alloc_array[ptr_index];
+
+    if (new_size <= chunk->size)
+    {
+        if (new_alignment != chunk->current_alignment)
+        {
+            void *new_ptr = heap_alloc(new_size, new_alignment);
+            if (!new_ptr)
+            {
+                return NULL;
+            }
+
+            size_t copy_size = new_size < chunk->usable_size ? new_size : chunk->usable_size;
+            memcpy(new_ptr, ptr, copy_size);
+            heap_free(ptr);
+            return new_ptr;
+        }
+
+        // now if the alignment is same and the size is below
+        size_t remaining = chunk->size - new_size;
+
+        // only split if remaining space is above cutoff
+        if (remaining >= SPLIT_CUTOFF)
+        {
+            void *new_chunk_ptr = (uint8_t *)chunk->chunk_ptr + new_size;
+            add_into_free_array(new_chunk_ptr, new_chunk_ptr,
+                                chunk->chunk_ptr, remaining, remaining,
+                                calculate_alignment(new_chunk_ptr));
+            chunk->size = new_size;
+        }
+
+        return ptr;
+    }
+
+    void *new_ptr = heap_alloc(new_size, new_alignment);
+    if (!new_ptr)
+    {
+        return NULL;
+    }
+
+    memcpy(new_ptr, ptr, chunk->usable_size);
+    heap_free(ptr);
+    return new_ptr;
 }
 
 #endif /* D46AFE7A_7823_4C7A_A759_A5737B4A74D1 */
