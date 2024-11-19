@@ -83,9 +83,27 @@ static size_t alloc_bin_32_size = 0;
 
 void *heap_alloc(size_t size, alignment_t alignment);
 void heap_free(void *ptr);
+void heap_init();
 void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment);
 
+#ifdef MEM_IMPLEMENTATION
+
 static void init_bins();
+static ssize_t search_by_ptr(void *ptr, metadata_t *array, size_t array_size);
+static ssize_t search_by_ptr_in_free_array(void *ptr);
+static ssize_t search_by_ptr_in_alloc_array(void *ptr);
+static ssize_t search_by_size_in_free_array(size_t size, alignment_t alignment);
+static inline alignment_t calculate_alignment(const void *ptr);
+static bool remove_from_array(size_t index, metadata_t *array, size_t *array_size);
+static bool remove_from_free_array(size_t index);
+static bool remove_from_alloc_array(size_t index);
+static size_t find_insertion_position(void *data_ptr, metadata_t *array, size_t array_size);
+static bool add_into_array(metadata_t chunk, metadata_t *array, size_t *array_size, size_t capacity);
+static bool add_into_free_array(void *chunk_ptr, void *data_ptr, void *prev_chunk_ptr,
+                                size_t size, size_t usable_size, alignment_t alignment);
+static bool add_into_alloc_array(void *chunk_ptr, void *data_ptr, void *prev_chunk_ptr,
+                                 size_t size, size_t usable_size, alignment_t alignment);
+static void defragment_heap();
 
 static ssize_t search_by_ptr(void *ptr, metadata_t *array, size_t array_size)
 {
@@ -337,7 +355,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
         target_free_size = &free_bin_8_size;
         target_alloc_size = &alloc_bin_8_size;
         target_capacity = BIN_8_CAPACITY;
-        size = BIN_8_SIZE; 
+        size = BIN_8_SIZE;
         alloc_type = ALLOC_TYPE_BIN_8;
     }
     else if (size <= BIN_16_SIZE)
@@ -347,7 +365,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
         target_free_size = &free_bin_16_size;
         target_alloc_size = &alloc_bin_16_size;
         target_capacity = BIN_16_CAPACITY;
-        size = BIN_16_SIZE; 
+        size = BIN_16_SIZE;
         alloc_type = ALLOC_TYPE_BIN_16;
     }
     else if (size <= BIN_32_SIZE)
@@ -357,7 +375,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
         target_free_size = &free_bin_32_size;
         target_alloc_size = &alloc_bin_32_size;
         target_capacity = BIN_32_CAPACITY;
-        size = BIN_32_SIZE; 
+        size = BIN_32_SIZE;
         alloc_type = ALLOC_TYPE_BIN_32;
     }
     else
@@ -474,7 +492,6 @@ static void init_bins()
 
     has_run = true;
 
-    // Initialize bin 8
     free_bin_8_size = 0;
     for (size_t i = 0; i < BIN_8_CAPACITY; i++)
     {
@@ -578,7 +595,7 @@ void heap_free(void *ptr)
     }
     else
     {
-        return; 
+        return;
     }
 
     if (source_alloc_array && alloc_index >= 0)
@@ -595,7 +612,7 @@ void heap_free(void *ptr)
 
         if (!add_into_array(free_chunk, target_free_array, target_free_size, target_capacity))
         {
-            return; 
+            return;
         }
         remove_from_array(alloc_index, source_alloc_array, source_alloc_size);
         return;
@@ -685,5 +702,7 @@ void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment)
     heap_free(ptr);
     return new_ptr;
 }
+
+#endif // MEM_IMPLEMENTATION
 
 #endif /* D46AFE7A_7823_4C7A_A759_A5737B4A74D1 */
