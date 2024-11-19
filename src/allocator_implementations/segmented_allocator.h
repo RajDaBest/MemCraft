@@ -16,6 +16,21 @@
 
 #define SPLIT_CUTOFF (16)
 
+#define BIN_8_SIZE (8)
+#define BIN_16_SIZE (16)
+#define BIN_32_SIZE (32)
+#define BIN_8_CAPACITY (1024)
+#define BIN_16_CAPACITY (512)
+#define BIN_32_CAPACITY (256)
+
+typedef enum
+{
+    ALLOC_TYPE_HEAP,
+    ALLOC_TYPE_BIN_8,
+    ALLOC_TYPE_BIN_16,
+    ALLOC_TYPE_BIN_32
+} allocation_type_t;
+
 typedef enum
 {
     ALIGN_1 = 1,
@@ -32,12 +47,13 @@ typedef enum
 
 typedef struct
 {
-    void *chunk_ptr; // Start of the chunk including padding
-    void *data_ptr;  // Aligned pointer to usable memory
+    void *chunk_ptr;
+    void *data_ptr;
     void *prev_chunk_ptr;
-    size_t size;        // Total size including padding
-    size_t usable_size; // Size available to user
+    size_t size;
+    size_t usable_size;
     alignment_t current_alignment;
+    allocation_type_t alloc_type;
 } metadata_t;
 
 static metadata_t free_array[FREE_CAPACITY] = {0};
@@ -47,9 +63,57 @@ static size_t alloc_array_size = 0;
 
 static uint8_t heap[HEAP_CAPACITY] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
 
+static uint8_t bin_8[BIN_8_CAPACITY * BIN_8_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+static uint8_t bin_16[BIN_16_CAPACITY * BIN_16_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+static uint8_t bin_32[BIN_32_CAPACITY * BIN_32_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+
+static metadata_t free_bin_8[BIN_8_CAPACITY] = {0};
+static metadata_t alloc_bin_8[BIN_8_CAPACITY] = {0};
+static metadata_t free_bin_16[BIN_16_CAPACITY] = {0};
+static metadata_t alloc_bin_16[BIN_16_CAPACITY] = {0};
+static metadata_t free_bin_32[BIN_32_CAPACITY] = {0};
+static metadata_t alloc_bin_32[BIN_32_CAPACITY] = {0};
+
+static size_t free_bin_8_size = 0;
+static size_t alloc_bin_8_size = 0;
+static size_t free_bin_16_size = 0;
+static size_t alloc_bin_16_size = 0;
+static size_t free_bin_32_size = 0;
+static size_t alloc_bin_32_size = 0;
+
 void *heap_alloc(size_t size, alignment_t alignment);
 void heap_free(void *ptr);
 void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment);
+
+static void init_bins()
+{
+    for (size_t i = 0; i < BIN_8_CAPACITY; i++)
+    {
+        void *chunk_ptr = &bin_8[i * BIN_8_SIZE];
+        add_into_free_array(chunk_ptr, chunk_ptr,
+                            i > 0 ? &bin_8[(i - 1) * BIN_8_SIZE] : NULL,
+                            BIN_8_SIZE, BIN_8_SIZE, MAX_ALIGNMENT);
+        free_bin_8[i].alloc_type = ALLOC_TYPE_BIN_8;
+    }
+
+    for (size_t i = 0; i < BIN_16_CAPACITY; i++)
+    {
+        void *chunk_ptr = &bin_16[i * BIN_16_SIZE];
+        add_into_free_array(chunk_ptr, chunk_ptr,
+                            i > 0 ? &bin_16[(i - 1) * BIN_16_SIZE] : NULL,
+                            BIN_16_SIZE, BIN_16_SIZE, MAX_ALIGNMENT);
+        free_bin_16[i].alloc_type = ALLOC_TYPE_BIN_16;
+    }
+
+    for (size_t i = 0; i < BIN_32_CAPACITY; i++)
+    {
+        void *chunk_ptr = &bin_32[i * BIN_32_SIZE];
+        add_into_free_array(chunk_ptr, chunk_ptr,
+                            i > 0 ? &bin_32[(i - 1) * BIN_32_SIZE] : NULL,
+                            BIN_32_SIZE, BIN_32_SIZE, MAX_ALIGNMENT);
+        free_bin_32[i].alloc_type = ALLOC_TYPE_BIN_32;
+    }
+}
 
 static ssize_t search_by_ptr(void *ptr, metadata_t *array, size_t array_size)
 {
@@ -266,7 +330,11 @@ void heap_init()
     has_run = true;
     free_array_size = 0;
     alloc_array_size = 0;
+
     add_into_free_array(heap, heap, NULL, HEAP_CAPACITY, HEAP_CAPACITY, MAX_ALIGNMENT);
+    free_array[0].alloc_type = ALLOC_TYPE_HEAP;
+
+    init_bins();
 }
 
 void *heap_alloc(size_t size, alignment_t alignment)
@@ -281,6 +349,44 @@ void *heap_alloc(size_t size, alignment_t alignment)
     if (((alignment) & (alignment - 1)) || (alignment > MAX_ALIGNMENT))
     {
         alignment = DEFAULT_ALIGNMENT;
+    }
+
+    // Select appropriate bin based on size
+    metadata_t *target_free_array;
+    metadata_t *target_alloc_array;
+    size_t *target_free_size;
+    size_t *target_alloc_size;
+    allocation_type_t alloc_type;
+
+    if (size <= BIN_8_SIZE)
+    {
+        target_free_array = free_bin_8;
+        target_alloc_array = alloc_bin_8;
+        target_free_size = &free_bin_8_size;
+        target_alloc_size = &alloc_bin_8_size;
+        alloc_type = ALLOC_TYPE_BIN_8;
+    }
+    else if (size <= BIN_16_SIZE)
+    {
+        target_free_array = free_bin_16;
+        target_alloc_array = alloc_bin_16;
+        target_free_size = &free_bin_16_size;
+        target_alloc_size = &alloc_bin_16_size;
+        alloc_type = ALLOC_TYPE_BIN_16;
+    }
+    else if (size <= BIN_32_SIZE)
+    {
+        target_free_array = free_bin_32;
+        target_alloc_array = alloc_bin_32;
+        target_free_size = &free_bin_32_size;
+        target_alloc_size = &alloc_bin_32_size;
+        alloc_type = ALLOC_TYPE_BIN_32;
+    }
+    else
+    {
+        // Use regular heap allocation for larger sizes
+        // ... (existing heap allocation code) ...
+        alloc_type = ALLOC_TYPE_HEAP;
     }
 
     ssize_t best_fit_index = search_by_size_in_free_array(size, alignment);
@@ -414,3 +520,255 @@ void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment)
 }
 
 #endif /* D46AFE7A_7823_4C7A_A759_A5737B4A74D1 */
+
+void *heap_alloc(size_t size, alignment_t alignment)
+{
+    if (!size)
+    {
+        return NULL;
+    }
+
+    heap_init();
+
+    if (((alignment) & (alignment - 1)) || (alignment > MAX_ALIGNMENT))
+    {
+        alignment = DEFAULT_ALIGNMENT;
+    }
+
+    // Handle small allocations using bins
+    metadata_t *target_free_array;
+    metadata_t *target_alloc_array;
+    size_t *target_free_size;
+    size_t *target_alloc_size;
+    size_t target_capacity;
+    allocation_type_t alloc_type;
+
+    if (size <= BIN_8_SIZE)
+    {
+        target_free_array = free_bin_8;
+        target_alloc_array = alloc_bin_8;
+        target_free_size = &free_bin_8_size;
+        target_alloc_size = &alloc_bin_8_size;
+        target_capacity = BIN_8_CAPACITY;
+        size = BIN_8_SIZE; // Round up to bin size
+        alloc_type = ALLOC_TYPE_BIN_8;
+    }
+    else if (size <= BIN_16_SIZE)
+    {
+        target_free_array = free_bin_16;
+        target_alloc_array = alloc_bin_16;
+        target_free_size = &free_bin_16_size;
+        target_alloc_size = &alloc_bin_16_size;
+        target_capacity = BIN_16_CAPACITY;
+        size = BIN_16_SIZE; // Round up to bin size
+        alloc_type = ALLOC_TYPE_BIN_16;
+    }
+    else if (size <= BIN_32_SIZE)
+    {
+        target_free_array = free_bin_32;
+        target_alloc_array = alloc_bin_32;
+        target_free_size = &free_bin_32_size;
+        target_alloc_size = &alloc_bin_32_size;
+        target_capacity = BIN_32_CAPACITY;
+        size = BIN_32_SIZE; // Round up to bin size
+        alloc_type = ALLOC_TYPE_BIN_32;
+    }
+    else
+    {
+        // For larger allocations, use the heap
+        ssize_t best_fit_index = search_by_size_in_free_array(size, alignment);
+        if (best_fit_index < 0)
+        {
+            return NULL;
+        }
+
+        metadata_t *chunk = &free_array[best_fit_index];
+        size_t padding = ((alignment - (size_t)chunk->chunk_ptr) & (alignment - 1));
+        void *data_ptr = (uint8_t *)chunk->chunk_ptr + padding;
+
+        if (padding >= SPLIT_CUTOFF)
+        {
+            add_into_free_array(chunk->chunk_ptr, chunk->chunk_ptr,
+                                chunk->prev_chunk_ptr, padding, padding,
+                                calculate_alignment(chunk->chunk_ptr));
+            free_array[free_array_size - 1].alloc_type = ALLOC_TYPE_HEAP;
+
+            chunk->chunk_ptr = (uint8_t *)chunk->chunk_ptr + padding;
+            chunk->size -= padding;
+            chunk->prev_chunk_ptr = (uint8_t *)chunk->chunk_ptr - padding;
+        }
+
+        size_t remaining = chunk->size - size;
+        if (remaining >= SPLIT_CUTOFF)
+        {
+            void *new_chunk_ptr = (uint8_t *)chunk->chunk_ptr + size;
+            add_into_free_array(new_chunk_ptr, new_chunk_ptr,
+                                chunk->chunk_ptr, remaining, remaining,
+                                calculate_alignment(new_chunk_ptr));
+            free_array[free_array_size - 1].alloc_type = ALLOC_TYPE_HEAP;
+            chunk->size = size;
+        }
+
+        add_into_alloc_array(chunk->chunk_ptr, data_ptr,
+                             chunk->prev_chunk_ptr, chunk->size,
+                             chunk->size - padding, alignment);
+        alloc_array[alloc_array_size - 1].alloc_type = ALLOC_TYPE_HEAP;
+        remove_from_free_array(best_fit_index);
+
+        return data_ptr;
+    }
+
+    if (*target_free_size == 0)
+    {
+        return NULL;
+    }
+
+    metadata_t chunk = target_free_array[0];
+
+    size_t padding = ((alignment - (size_t)chunk.chunk_ptr) & (alignment - 1));
+    void *data_ptr = (uint8_t *)chunk.chunk_ptr + padding;
+
+    size_t aligned_size = size;
+    if (alignment < size)
+    {
+        aligned_size = ((size + (size - 1)) / size) * size;
+    }
+
+    uint8_t *bin_start;
+    uint8_t *bin_end;
+    switch (alloc_type)
+    {
+    case ALLOC_TYPE_BIN_8:
+        bin_start = bin_8;
+        bin_end = bin_8 + (BIN_8_CAPACITY * BIN_8_SIZE);
+        break;
+    case ALLOC_TYPE_BIN_16:
+        bin_start = bin_16;
+        bin_end = bin_16 + (BIN_16_CAPACITY * BIN_16_SIZE);
+        break;
+    case ALLOC_TYPE_BIN_32:
+        bin_start = bin_32;
+        bin_end = bin_32 + (BIN_32_CAPACITY * BIN_32_SIZE);
+        break;
+    default:
+        return NULL;
+    }
+
+    if ((uint8_t *)data_ptr + aligned_size > bin_end || (uint8_t *)data_ptr < bin_start)
+    {
+        return NULL;
+    }
+
+    metadata_t alloc_chunk = {
+        .chunk_ptr = chunk.chunk_ptr,
+        .data_ptr = data_ptr,
+        .prev_chunk_ptr = chunk.prev_chunk_ptr,
+        .size = aligned_size,
+        .usable_size = aligned_size - padding,
+        .current_alignment = alignment,
+        .alloc_type = alloc_type};
+
+    if (!add_into_array(alloc_chunk, target_alloc_array, target_alloc_size, target_capacity))
+    {
+        return NULL;
+    }
+
+    remove_from_array(0, target_free_array, target_free_size);
+
+    return data_ptr;
+}
+
+void heap_free(void *ptr)
+{
+    if (!ptr)
+    {
+        return;
+    }
+
+    // First try to find in bin allocations
+    ssize_t alloc_index;
+    metadata_t *chunk = NULL;
+    metadata_t *source_alloc_array = NULL;
+    metadata_t *target_free_array = NULL;
+    size_t *source_alloc_size = NULL;
+    size_t *target_free_size = NULL;
+    size_t target_capacity = 0;
+
+    // Try bin 8
+    alloc_index = search_by_ptr(ptr, alloc_bin_8, alloc_bin_8_size);
+    if (alloc_index >= 0)
+    {
+        source_alloc_array = alloc_bin_8;
+        target_free_array = free_bin_8;
+        source_alloc_size = &alloc_bin_8_size;
+        target_free_size = &free_bin_8_size;
+        target_capacity = BIN_8_CAPACITY;
+        chunk = &alloc_bin_8[alloc_index];
+    }
+    else
+    {
+        // Try bin 16
+        alloc_index = search_by_ptr(ptr, alloc_bin_16, alloc_bin_16_size);
+        if (alloc_index >= 0)
+        {
+            source_alloc_array = alloc_bin_16;
+            target_free_array = free_bin_16;
+            source_alloc_size = &alloc_bin_16_size;
+            target_free_size = &free_bin_16_size;
+            target_capacity = BIN_16_CAPACITY;
+            chunk = &alloc_bin_16[alloc_index];
+        }
+        else
+        {
+            // Try bin 32
+            alloc_index = search_by_ptr(ptr, alloc_bin_32, alloc_bin_32_size);
+            if (alloc_index >= 0)
+            {
+                source_alloc_array = alloc_bin_32;
+                target_free_array = free_bin_32;
+                source_alloc_size = &alloc_bin_32_size;
+                target_free_size = &free_bin_32_size;
+                target_capacity = BIN_32_CAPACITY;
+                chunk = &alloc_bin_32[alloc_index];
+            }
+        }
+    }
+
+    if (chunk) // Found in bins
+    {
+        // Move chunk from allocated to free array
+        metadata_t free_chunk = {
+            .chunk_ptr = chunk->chunk_ptr,
+            .data_ptr = chunk->data_ptr,
+            .prev_chunk_ptr = chunk->prev_chunk_ptr,
+            .size = chunk->size,
+            .usable_size = chunk->usable_size,
+            .current_alignment = chunk->current_alignment,
+            .alloc_type = chunk->alloc_type};
+
+        if (!add_into_array(free_chunk, target_free_array, target_free_size, target_capacity))
+        {
+            return; // Error: free array is full (shouldn't happen)
+        }
+
+        remove_from_array(alloc_index, source_alloc_array, source_alloc_size);
+        return;
+    }
+
+    // If not found in bins, try heap allocation
+    alloc_index = search_by_ptr_in_alloc_array(ptr);
+    if (alloc_index < 0)
+    {
+        return; // Not found in any allocation array
+    }
+
+    // Handle heap allocation
+    chunk = &alloc_array[alloc_index];
+    add_into_free_array(chunk->chunk_ptr, chunk->data_ptr,
+                        chunk->prev_chunk_ptr, chunk->size,
+                        chunk->usable_size, chunk->current_alignment);
+    free_array[free_array_size - 1].alloc_type = ALLOC_TYPE_HEAP;
+    remove_from_alloc_array(alloc_index);
+
+    defragment_heap();
+}
