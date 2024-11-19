@@ -323,7 +323,6 @@ void *heap_alloc(size_t size, alignment_t alignment)
         alignment = DEFAULT_ALIGNMENT;
     }
 
-    // Handle small allocations using bins
     metadata_t *target_free_array;
     metadata_t *target_alloc_array;
     size_t *target_free_size;
@@ -338,7 +337,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
         target_free_size = &free_bin_8_size;
         target_alloc_size = &alloc_bin_8_size;
         target_capacity = BIN_8_CAPACITY;
-        size = BIN_8_SIZE; // Round up to bin size
+        size = BIN_8_SIZE; 
         alloc_type = ALLOC_TYPE_BIN_8;
     }
     else if (size <= BIN_16_SIZE)
@@ -348,7 +347,7 @@ void *heap_alloc(size_t size, alignment_t alignment)
         target_free_size = &free_bin_16_size;
         target_alloc_size = &alloc_bin_16_size;
         target_capacity = BIN_16_CAPACITY;
-        size = BIN_16_SIZE; // Round up to bin size
+        size = BIN_16_SIZE; 
         alloc_type = ALLOC_TYPE_BIN_16;
     }
     else if (size <= BIN_32_SIZE)
@@ -358,12 +357,11 @@ void *heap_alloc(size_t size, alignment_t alignment)
         target_free_size = &free_bin_32_size;
         target_alloc_size = &alloc_bin_32_size;
         target_capacity = BIN_32_CAPACITY;
-        size = BIN_32_SIZE; // Round up to bin size
+        size = BIN_32_SIZE; 
         alloc_type = ALLOC_TYPE_BIN_32;
     }
     else
     {
-        // For larger allocations, use the heap
         ssize_t best_fit_index = search_by_size_in_free_array(size, alignment);
         if (best_fit_index < 0)
         {
@@ -492,7 +490,6 @@ static void init_bins()
         add_into_array(chunk, free_bin_8, &free_bin_8_size, BIN_8_CAPACITY);
     }
 
-    // Initialize bin 16
     free_bin_16_size = 0;
     for (size_t i = 0; i < BIN_16_CAPACITY; i++)
     {
@@ -508,7 +505,6 @@ static void init_bins()
         add_into_array(chunk, free_bin_16, &free_bin_16_size, BIN_16_CAPACITY);
     }
 
-    // Initialize bin 32
     free_bin_32_size = 0;
     for (size_t i = 0; i < BIN_32_CAPACITY; i++)
     {
@@ -532,7 +528,6 @@ void heap_free(void *ptr)
         return;
     }
 
-    // First determine which region the pointer belongs to by checking address ranges
     metadata_t *chunk = NULL;
     metadata_t *source_alloc_array = NULL;
     metadata_t *target_free_array = NULL;
@@ -550,7 +545,6 @@ void heap_free(void *ptr)
     uintptr_t bin_32_start = (uintptr_t)bin_32;
     uintptr_t bin_32_end = bin_32_start + BIN_32_SIZE * BIN_32_CAPACITY;
 
-    // Check if pointer is within bin 8 range
     if ((uintptr_t)ptr >= bin_8_start && (uintptr_t)ptr < bin_8_end)
     {
         source_alloc_array = alloc_bin_8;
@@ -560,7 +554,6 @@ void heap_free(void *ptr)
         target_capacity = BIN_8_CAPACITY;
         alloc_index = search_by_ptr(ptr, alloc_bin_8, alloc_bin_8_size);
     }
-    // Check if pointer is within bin 16 range
     else if ((uintptr_t)ptr >= bin_16_start && (uintptr_t)ptr < bin_16_end)
     {
         source_alloc_array = alloc_bin_16;
@@ -570,7 +563,6 @@ void heap_free(void *ptr)
         target_capacity = BIN_16_CAPACITY;
         alloc_index = search_by_ptr(ptr, alloc_bin_16, alloc_bin_16_size);
     }
-    // Check if pointer is within bin 32 range
     else if ((uintptr_t)ptr >= bin_32_start && (uintptr_t)ptr < bin_32_end)
     {
         source_alloc_array = alloc_bin_32;
@@ -580,21 +572,18 @@ void heap_free(void *ptr)
         target_capacity = BIN_32_CAPACITY;
         alloc_index = search_by_ptr(ptr, alloc_bin_32, alloc_bin_32_size);
     }
-    // Check if pointer is within heap range
     else if ((uintptr_t)ptr >= heap_start && (uintptr_t)ptr < heap_end)
     {
         alloc_index = search_by_ptr_in_alloc_array(ptr);
     }
     else
     {
-        return; // Pointer not in any valid range
+        return; 
     }
 
-    // If found in bins
     if (source_alloc_array && alloc_index >= 0)
     {
         chunk = &source_alloc_array[alloc_index];
-        // Move chunk from allocated to free array
         metadata_t free_chunk = {
             .chunk_ptr = chunk->chunk_ptr,
             .data_ptr = chunk->data_ptr,
@@ -606,13 +595,12 @@ void heap_free(void *ptr)
 
         if (!add_into_array(free_chunk, target_free_array, target_free_size, target_capacity))
         {
-            return; // Error: free array is full (shouldn't happen)
+            return; 
         }
         remove_from_array(alloc_index, source_alloc_array, source_alloc_size);
         return;
     }
 
-    // If found in heap
     if (alloc_index >= 0)
     {
         chunk = &alloc_array[alloc_index];
