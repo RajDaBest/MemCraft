@@ -16,6 +16,8 @@
 
 #define SPLIT_CUTOFF (16)
 
+#define THREAD_LOCAL __thread
+
 #define BIN_8_SIZE (8)
 #define BIN_16_SIZE (16)
 #define BIN_32_SIZE (32)
@@ -56,30 +58,30 @@ typedef struct
     allocation_type_t alloc_type;
 } metadata_t;
 
-static metadata_t free_array[FREE_CAPACITY] = {0};
-static metadata_t alloc_array[ALLOC_CAPACITY] = {0};
-static size_t free_array_size = 0;
-static size_t alloc_array_size = 0;
+THREAD_LOCAL static metadata_t free_array[FREE_CAPACITY] = {0};
+THREAD_LOCAL static metadata_t alloc_array[ALLOC_CAPACITY] = {0};
+THREAD_LOCAL static size_t free_array_size = 0;
+THREAD_LOCAL static size_t alloc_array_size = 0;
 
-static uint8_t heap[HEAP_CAPACITY] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+THREAD_LOCAL static uint8_t heap[HEAP_CAPACITY] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
 
-static uint8_t bin_8[BIN_8_CAPACITY * BIN_8_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
-static uint8_t bin_16[BIN_16_CAPACITY * BIN_16_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
-static uint8_t bin_32[BIN_32_CAPACITY * BIN_32_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+THREAD_LOCAL static uint8_t bin_8[BIN_8_CAPACITY * BIN_8_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+THREAD_LOCAL static uint8_t bin_16[BIN_16_CAPACITY * BIN_16_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+THREAD_LOCAL static uint8_t bin_32[BIN_32_CAPACITY * BIN_32_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
 
-static metadata_t free_bin_8[BIN_8_CAPACITY] = {0};
-static metadata_t alloc_bin_8[BIN_8_CAPACITY] = {0};
-static metadata_t free_bin_16[BIN_16_CAPACITY] = {0};
-static metadata_t alloc_bin_16[BIN_16_CAPACITY] = {0};
-static metadata_t free_bin_32[BIN_32_CAPACITY] = {0};
-static metadata_t alloc_bin_32[BIN_32_CAPACITY] = {0};
+THREAD_LOCAL static metadata_t free_bin_8[BIN_8_CAPACITY] = {0};
+THREAD_LOCAL static metadata_t alloc_bin_8[BIN_8_CAPACITY] = {0};
+THREAD_LOCAL static metadata_t free_bin_16[BIN_16_CAPACITY] = {0};
+THREAD_LOCAL static metadata_t alloc_bin_16[BIN_16_CAPACITY] = {0};
+THREAD_LOCAL static metadata_t free_bin_32[BIN_32_CAPACITY] = {0};
+THREAD_LOCAL static metadata_t alloc_bin_32[BIN_32_CAPACITY] = {0};
 
-static size_t free_bin_8_size = 0;
-static size_t alloc_bin_8_size = 0;
-static size_t free_bin_16_size = 0;
-static size_t alloc_bin_16_size = 0;
-static size_t free_bin_32_size = 0;
-static size_t alloc_bin_32_size = 0;
+THREAD_LOCAL static size_t free_bin_8_size = 0;
+THREAD_LOCAL static size_t alloc_bin_8_size = 0;
+THREAD_LOCAL static size_t free_bin_16_size = 0;
+THREAD_LOCAL static size_t alloc_bin_16_size = 0;
+THREAD_LOCAL static size_t free_bin_32_size = 0;
+THREAD_LOCAL static size_t alloc_bin_32_size = 0;
 
 void *heap_alloc(size_t size, alignment_t alignment);
 void heap_free(void *ptr);
