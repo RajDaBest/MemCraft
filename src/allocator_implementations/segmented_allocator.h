@@ -714,4 +714,25 @@ void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment)
 
 #endif // MEM_IMPLEMENTATION
 
+#undef HEAP_CAPACITY
+#undef FREE_CAPACITY
+#undef ALLOC_CAPACITY
+
+#undef MAX_ALIGNMENT
+#undef MAX_ALIGNMENT_INT
+#undef DEFAULT_ALIGNMENT // by default align on pointer size, this is enough for most platforms and architectures
+
+#undef SPLIT_CUTOFF
+
+#undef FREE_DEFRAG_CUTOFF // must be a power of 2
+
+#undef THREAD_LOCAL
+
+#undef BIN_8_SIZE
+#undef BIN_16_SIZE
+#undef BIN_32_SIZE
+#undef BIN_8_CAPACITY
+#undef BIN_16_CAPACITY
+#undef BIN_32_CAPACITY
+
 #endif /* D46AFE7A_7823_4C7A_A759_A5737B4A74D1 */
