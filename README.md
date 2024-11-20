@@ -1,6 +1,7 @@
 # MemCraft
 
 A modular, high-performance heap memory allocator implementation in C with support for multiple allocation strategies and memory integrity verification.
+This is a STB-style, header-only library.
 
 ## Features
 
