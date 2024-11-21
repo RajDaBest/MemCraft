@@ -1,6 +1,6 @@
 # MemCraft
 
-A modular, high-performance heap memory allocator implementation in C with support for multiple allocation strategies and memory integrity verification.
+A modular, high-performance heap memory allocator and garbage collector implementation in C with support for multiple allocation strategies and memory integrity verification.
 This is a STB-style, header-only library.
 
 ## Features
@@ -8,6 +8,10 @@ This is a STB-style, header-only library.
 - **Multiple Allocation Strategies**
   - Segmented Allocator: Optimized for different size classes with separate memory bins and a traditional heap for general allocations with memory coalescing
   - Inline Allocator: Traditional inline metadata approach with memory coalescing
+
+- **Garbage Collector**
+  - Garbage collector automatically collects unused allocated memory
+  - Scans the libc heap, all thread stacks, the static memory (data and bss section) and the allocator heap for collecting unused allocated memory
   
 - **Memory Alignment**
   - Configurable alignment support (4, 8, 16, 32 bytes)
