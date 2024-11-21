@@ -116,6 +116,7 @@ typedef enum {
 
 The segmented allocator implements a multi-bin strategy with:
 - **MultiThread-Safe**
+- **Garbage-Collection**
 - Fixed-size bins (8, 16, 32 bytes) for common allocation sizes
 - Standard Heap allocation for allocation above 32 bytes
 - Binary search for efficient block location
