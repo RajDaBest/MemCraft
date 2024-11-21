@@ -150,6 +150,21 @@ typedef struct
 static thread_info_t thread_info_array[THREAD_SCAN_LIMIT];
 static size_t thread_count = 0;
 
+static void collect_on_personal_heap();
+static void collect_static();
+static void handle_error(const char *message);
+static int parse_stack_addresses(const char *line, void **stack_base, void **stack_end);
+static int get_thread_stack_addresses(pid_t thread_id, void **stack_base, void **stack_end);
+static void collect_thread_info();
+static void get_libc_heap_range(void **start, void **end);
+static void mark_if_points_to_heap(uintptr_t potential_pointer);
+static void collect_on_personal_heap();
+static void collect_static();
+static void collect_thread_stack();
+static void collect_libc_heap();
+static void sweep_unmarked();
+static void garbage_collect();
+
 void collect_on_personal_heap()
 {
     uintptr_t heap_start = (uintptr_t)heap;
@@ -270,7 +285,7 @@ int get_thread_stack_addresses(pid_t thread_id, void **stack_base, void **stack_
     return 0;
 }
 
-void collect_thread_stack()
+void collect_thread_info()
 {
     DIR *task_dir = opendir("/proc/self/task");
     if (!task_dir)
@@ -304,6 +319,153 @@ void collect_thread_stack()
     }
 
     closedir(task_dir);
+}
+
+static void get_libc_heap_range(void **start, void **end)
+{
+    char line[LINE_BUFFER_LENGTH];
+    FILE *maps = fopen("/proc/self/maps", "r");
+    if (!maps)
+    {
+        handle_error("Failed to open /proc/self/maps");
+    }
+
+    while (fgets(line, sizeof(line), maps))
+    {
+        if (strstr(line, "[heap]"))
+        {
+            void *heap_start, *heap_end;
+            if (parse_stack_addresses(line, &heap_start, &heap_end))
+            {
+                *start = heap_start;
+                *end = heap_end;
+                fclose(maps);
+                return;
+            }
+        }
+    }
+
+    fclose(maps);
+    *start = NULL;
+    *end = NULL;
+}
+
+static void mark_if_points_to_heap(uintptr_t potential_pointer)
+{
+    for (size_t i = 0; i < alloc_array_size; i++)
+    {
+        metadata_t *chunk = &alloc_array[i];
+        uintptr_t chunk_start = (uintptr_t)chunk->data_ptr;
+        uintptr_t chunk_end = chunk_start + chunk->usable_size;
+
+        if (potential_pointer >= chunk_start && potential_pointer < chunk_end)
+        {
+            chunk->mark = true;
+            break;
+        }
+    }
+}
+
+void collect_on_personal_heap()
+{
+    for (size_t i = 0; i < alloc_array_size; i++)
+    {
+        alloc_array[i].mark = false;
+    }
+
+    uintptr_t heap_start = (uintptr_t)heap;
+    uintptr_t heap_end = heap_start + (uintptr_t)HEAP_CAPACITY;
+
+    for (size_t i = 0; i < alloc_array_size; i++)
+    {
+        metadata_t current = alloc_array[i];
+        if (current.usable_size <= sizeof(void *))
+            continue;
+
+        for (uintptr_t addr = (uintptr_t)current.data_ptr;
+             addr <= (uintptr_t)current.data_ptr + current.usable_size - sizeof(void *);
+             addr += sizeof(void *))
+        {
+            mark_if_points_to_heap(*(uintptr_t *)addr);
+        }
+    }
+}
+
+void collect_static()
+{
+    for (uintptr_t addr = (uintptr_t)__data_start;
+         addr <= (uintptr_t)_edata - sizeof(void *);
+         addr += sizeof(void *))
+    {
+        mark_if_points_to_heap(*(uintptr_t *)addr);
+    }
+
+    for (uintptr_t addr = (uintptr_t)__bss_start;
+         addr <= (uintptr_t)_end - sizeof(void *);
+         addr += sizeof(void *))
+    {
+        mark_if_points_to_heap(*(uintptr_t *)addr);
+    }
+}
+
+void collect_thread_stack()
+{
+    collect_thread_info();
+
+    for (size_t i = 0; i < thread_count; i++)
+    {
+        for (uintptr_t addr = (uintptr_t)thread_info_array[i].stack_base;
+             addr <= (uintptr_t)thread_info_array[i].stack_end - sizeof(void *);
+             addr += sizeof(void *))
+        {
+            mark_if_points_to_heap(*(uintptr_t *)addr);
+        }
+    }
+}
+
+void collect_libc_heap()
+{
+    void *libc_heap_start, *libc_heap_end;
+    get_libc_heap_range(&libc_heap_start, &libc_heap_end);
+
+    if (!libc_heap_start || !libc_heap_end)
+        return;
+
+    for (uintptr_t addr = (uintptr_t)libc_heap_start;
+         addr <= (uintptr_t)libc_heap_end - sizeof(void *);
+         addr += sizeof(void *))
+    {
+        mark_if_points_to_heap(*(uintptr_t *)addr);
+    }
+}
+
+void sweep_unmarked()
+{
+    for (ssize_t i = alloc_array_size - 1; i >= 0; i--)
+    {
+        if (!alloc_array[i].mark)
+        {
+            add_into_free_array(
+                alloc_array[i].chunk_ptr,
+                alloc_array[i].data_ptr,
+                alloc_array[i].prev_chunk_ptr,
+                alloc_array[i].size,
+                alloc_array[i].usable_size,
+                alloc_array[i].current_alignment);
+            remove_from_alloc_array(i);
+        }
+    }
+    defragment_heap();
+}
+
+void garbage_collect()
+{
+    collect_on_personal_heap();
+    collect_static();
+    collect_thread_stack();
+    collect_libc_heap();
+
+    sweep_unmarked();
 }
 
 #undef MAX_PATH_LENGTH
