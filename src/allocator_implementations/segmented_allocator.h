@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #define HEAP_CAPACITY (65536)
 #define FREE_CAPACITY (1024)
@@ -92,6 +93,8 @@ void heap_free(void *ptr);
 void heap_init();
 void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment);
 
+#define MEM_IMPLEMENTATION
+
 #ifdef MEM_IMPLEMENTATION
 
 static void init_bins();
@@ -110,6 +113,48 @@ static bool add_into_free_array(void *chunk_ptr, void *data_ptr, void *prev_chun
 static bool add_into_alloc_array(void *chunk_ptr, void *data_ptr, void *prev_chunk_ptr,
                                  size_t size, size_t usable_size, alignment_t alignment);
 static void defragment_heap();
+void detect_references_on_heap();
+
+
+void detect_references_on_stacks()
+{
+
+}
+
+void detect_references_on_heap()
+{
+    uintptr_t heap_start = (uintptr_t)heap;
+    uintptr_t heap_end = heap_start + (uintptr_t)HEAP_CAPACITY;
+
+    for (size_t i = 0; i < alloc_array_size; i++)
+    {
+        metadata_t current_metadata = alloc_array[i];
+
+        if (current_metadata.usable_size <= sizeof(void *))
+        {
+            continue;
+        }
+
+        uintptr_t block_start = (uintptr_t)current_metadata.data_ptr;
+        uintptr_t block_end = block_start + current_metadata.usable_size;
+
+        /* The thing is, if the compiler is putting any address in memory, it will always align it on it's natural boundary, i.e, sizeof (void *),
+        but in our implementation we can use any aligned memory location to put pointers there as data, so we need to scan the heap byte by byte, while
+        in compiler heap, stacks, static and BSS section we can scan in multiples of 8 (the start of these sections are at least aligned on sizeof (void *)) */
+
+        for (uintptr_t address = block_start;
+             address <= block_end - sizeof(void *);
+             address++)
+        {
+            uintptr_t potential_pointer = *(uintptr_t *)address;
+
+            if (potential_pointer >= heap_start && potential_pointer < heap_end)
+            {
+                printf("Found pointer %zu in heap\n", (uintptr_t)potential_pointer);
+            }
+        }
+    }
+}
 
 static ssize_t search_by_ptr(void *ptr, metadata_t *array, size_t array_size)
 {
