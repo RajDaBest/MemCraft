@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <stdio.h>
 
 #define HEAP_CAPACITY (65536)
@@ -18,8 +19,6 @@
 #define SPLIT_CUTOFF (16)
 
 #define FREE_DEFRAG_CUTOFF (32) // must be a power of 2
-
-#define THREAD_LOCAL __thread
 
 #define BIN_8_SIZE (8)
 #define BIN_16_SIZE (16)
@@ -62,32 +61,32 @@ typedef struct
     bool mark;
 } metadata_t;
 
-static THREAD_LOCAL metadata_t free_array[FREE_CAPACITY] = {0};
-static THREAD_LOCAL metadata_t alloc_array[ALLOC_CAPACITY] = {0};
-static THREAD_LOCAL size_t free_array_size = 0;
-static THREAD_LOCAL size_t alloc_array_size = 0;
+static metadata_t free_array[FREE_CAPACITY] = {0};
+static metadata_t alloc_array[ALLOC_CAPACITY] = {0};
+static size_t free_array_size = 0;
+static size_t alloc_array_size = 0;
 
-static THREAD_LOCAL uint8_t heap[HEAP_CAPACITY] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+static uint8_t heap[HEAP_CAPACITY] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
 
-static THREAD_LOCAL uint8_t bin_8[BIN_8_CAPACITY * BIN_8_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
-static THREAD_LOCAL uint8_t bin_16[BIN_16_CAPACITY * BIN_16_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
-static THREAD_LOCAL uint8_t bin_32[BIN_32_CAPACITY * BIN_32_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+static uint8_t bin_8[BIN_8_CAPACITY * BIN_8_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+static uint8_t bin_16[BIN_16_CAPACITY * BIN_16_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
+static uint8_t bin_32[BIN_32_CAPACITY * BIN_32_SIZE] __attribute__((aligned(MAX_ALIGNMENT_INT))) = {0};
 
-static THREAD_LOCAL metadata_t free_bin_8[BIN_8_CAPACITY] = {0};
-static THREAD_LOCAL metadata_t alloc_bin_8[BIN_8_CAPACITY] = {0};
-static THREAD_LOCAL metadata_t free_bin_16[BIN_16_CAPACITY] = {0};
-static THREAD_LOCAL metadata_t alloc_bin_16[BIN_16_CAPACITY] = {0};
-static THREAD_LOCAL metadata_t free_bin_32[BIN_32_CAPACITY] = {0};
-static THREAD_LOCAL metadata_t alloc_bin_32[BIN_32_CAPACITY] = {0};
+static metadata_t free_bin_8[BIN_8_CAPACITY] = {0};
+static metadata_t alloc_bin_8[BIN_8_CAPACITY] = {0};
+static metadata_t free_bin_16[BIN_16_CAPACITY] = {0};
+static metadata_t alloc_bin_16[BIN_16_CAPACITY] = {0};
+static metadata_t free_bin_32[BIN_32_CAPACITY] = {0};
+static metadata_t alloc_bin_32[BIN_32_CAPACITY] = {0};
 
-static THREAD_LOCAL size_t free_bin_8_size = 0;
-static THREAD_LOCAL size_t alloc_bin_8_size = 0;
-static THREAD_LOCAL size_t free_bin_16_size = 0;
-static THREAD_LOCAL size_t alloc_bin_16_size = 0;
-static THREAD_LOCAL size_t free_bin_32_size = 0;
-static THREAD_LOCAL size_t alloc_bin_32_size = 0;
+static size_t free_bin_8_size = 0;
+static size_t alloc_bin_8_size = 0;
+static size_t free_bin_16_size = 0;
+static size_t alloc_bin_16_size = 0;
+static size_t free_bin_32_size = 0;
+static size_t alloc_bin_32_size = 0;
 
-static THREAD_LOCAL size_t num_of_free_called_on_heap = 0;
+static size_t num_of_free_called_on_heap = 0;
 
 void *heap_alloc(size_t size, alignment_t alignment);
 void heap_free(void *ptr);
@@ -117,361 +116,222 @@ static void defragment_heap();
 
 #ifdef GC_COLLECT
 
-/* I need to scan the stack of all the threads since a thread may reference a heap pointer of some other thread since the allocator uses thread-local storage */
+extern char __data_start, _edata; // data section boundaries
+extern char __bss_start, _end;    // bss section boundaries
 
-#include <dirent.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/types.h>
-#include <string.h>
-#include <errno.h>
-#include <stdint.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
+#define MAX_GC_ROOTS 1024
+static void *gc_roots[MAX_GC_ROOTS];
+static size_t gc_roots_count = 0;
 
-#define MAX_PATH_LENGTH 256
-#define THREAD_SCAN_LIMIT 1024
-#define MAX_FILE_LENGTH 16000
-#define LINE_BUFFER_LENGTH 1024
-
-extern void *__data_start;
-extern void *__bss_start;
-extern void *_edata; // end of data section
-extern void *_end;   // end of bss section
-
-typedef struct
+void gc_register_root(void *root)
 {
-    pid_t thread_id;
+    if (gc_roots_count < MAX_GC_ROOTS)
+    {
+        gc_roots[gc_roots_count++] = root;
+    }
+}
+
+static bool is_valid_heap_ptr(void *ptr)
+{
+
+    return ((uintptr_t)ptr >= (uintptr_t)heap && (uintptr_t)ptr < (uintptr_t)heap + HEAP_CAPACITY) ||
+           ((uintptr_t)ptr >= (uintptr_t)bin_8 && (uintptr_t)ptr < (uintptr_t)bin_8 + BIN_8_CAPACITY * BIN_8_SIZE) ||
+           ((uintptr_t)ptr >= (uintptr_t)bin_16 && (uintptr_t)ptr < (uintptr_t)bin_16 + BIN_16_CAPACITY * BIN_16_SIZE) ||
+           ((uintptr_t)ptr >= (uintptr_t)bin_32 && (uintptr_t)ptr < (uintptr_t)bin_32 + BIN_32_CAPACITY * BIN_32_SIZE);
+}
+
+static bool is_marked_allocation(void *ptr)
+{
+    ssize_t heap_index = search_by_ptr_in_alloc_array(ptr);
+    if (heap_index != -1)
+    {
+        return alloc_array[heap_index].mark;
+    }
+
+    if ((uintptr_t)ptr >= (uintptr_t)bin_8 && (uintptr_t)ptr < (uintptr_t)bin_8 + BIN_8_CAPACITY * BIN_8_SIZE)
+    {
+        heap_index = search_by_ptr(ptr, alloc_bin_8, alloc_bin_8_size);
+        return (heap_index != -1) ? alloc_bin_8[heap_index].mark : false;
+    }
+    if ((uintptr_t)ptr >= (uintptr_t)bin_16 && (uintptr_t)ptr < (uintptr_t)bin_16 + BIN_16_CAPACITY * BIN_16_SIZE)
+    {
+        heap_index = search_by_ptr(ptr, alloc_bin_16, alloc_bin_16_size);
+        return (heap_index != -1) ? alloc_bin_16[heap_index].mark : false;
+    }
+    if ((uintptr_t)ptr >= (uintptr_t)bin_32 && (uintptr_t)ptr < (uintptr_t)bin_32 + BIN_32_CAPACITY * BIN_32_SIZE)
+    {
+        heap_index = search_by_ptr(ptr, alloc_bin_32, alloc_bin_32_size);
+        return (heap_index != -1) ? alloc_bin_32[heap_index].mark : false;
+    }
+
+    return false;
+}
+
+static void mark_object(void *ptr)
+{
+    if (!ptr || !is_valid_heap_ptr(ptr) || is_marked_allocation(ptr))
+    {
+        return;
+    }
+
+    ssize_t heap_index = search_by_ptr_in_alloc_array(ptr);
+    metadata_t *metadata = NULL;
+
+    if (heap_index != -1)
+    {
+        metadata = &alloc_array[heap_index];
+    }
+    else
+    {
+        if ((uintptr_t)ptr >= (uintptr_t)bin_8 && (uintptr_t)ptr < (uintptr_t)bin_8 + BIN_8_CAPACITY * BIN_8_SIZE)
+        {
+            heap_index = search_by_ptr(ptr, alloc_bin_8, alloc_bin_8_size);
+            metadata = (heap_index != -1) ? &alloc_bin_8[heap_index] : NULL;
+        }
+        else if ((uintptr_t)ptr >= (uintptr_t)bin_16 && (uintptr_t)ptr < (uintptr_t)bin_16 + BIN_16_CAPACITY * BIN_16_SIZE)
+        {
+            heap_index = search_by_ptr(ptr, alloc_bin_16, alloc_bin_16_size);
+            metadata = (heap_index != -1) ? &alloc_bin_16[heap_index] : NULL;
+        }
+        else if ((uintptr_t)ptr >= (uintptr_t)bin_32 && (uintptr_t)ptr < (uintptr_t)bin_32 + BIN_32_CAPACITY * BIN_32_SIZE)
+        {
+            heap_index = search_by_ptr(ptr, alloc_bin_32, alloc_bin_32_size);
+            metadata = (heap_index != -1) ? &alloc_bin_32[heap_index] : NULL;
+        }
+    }
+
+    if (!metadata)
+        return;
+
+    metadata->mark = true;
+
+    for (size_t offset = 0; offset < metadata->usable_size; offset += sizeof(void *))
+    {
+        void *potential_ptr = *(void **)((char *)ptr + offset);
+        mark_object(potential_ptr);
+    }
+}
+
+static void mark_roots()
+{
+    for (size_t i = 0; i < gc_roots_count; i++)
+    {
+        mark_object(gc_roots[i]);
+    }
+
+    uintptr_t stack_bottom, stack_top;
+
+#if defined(__linux__)
     void *stack_base;
-    void *stack_end;
-} thread_info_t;
+    size_t stack_size;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_getstack(&attr, &stack_base, &stack_size);
+    stack_bottom = (uintptr_t)stack_base;
+    stack_top = stack_bottom + stack_size;
+    pthread_attr_destroy(&attr);
+#elif defined(__APPLE__)
+    stack_bottom = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
+    stack_top = stack_bottom - pthread_get_stacksize_np(pthread_self());
+#else
+    uintptr_t sp;
+    __asm__ __volatile__("mov %%rsp, %0" : "=r"(sp));
+    stack_bottom = sp;
+    stack_top = ;
+#endif
 
-static thread_info_t thread_info_array[THREAD_SCAN_LIMIT];
-static size_t thread_count = 0;
-
-static void collect_on_personal_heap();
-static void collect_static();
-static void handle_error(const char *message);
-static int parse_stack_addresses(const char *line, void **stack_base, void **stack_end);
-static int get_thread_stack_addresses(pid_t thread_id, void **stack_base, void **stack_end);
-static void collect_thread_info();
-static void get_libc_heap_range(void **start, void **end);
-static void mark_if_points_to_heap(uintptr_t potential_pointer);
-static void collect_on_personal_heap();
-static void collect_static();
-static void collect_thread_stack();
-static void collect_libc_heap();
-static void sweep_unmarked();
-static void garbage_collect();
-
-void collect_on_personal_heap()
-{
-    uintptr_t heap_start = (uintptr_t)heap;
-    uintptr_t heap_end = heap_start + (uintptr_t)HEAP_CAPACITY;
-
-    for (size_t i = 0; i < alloc_array_size; i++)
+    for (uintptr_t *ptr = (uintptr_t *)stack_bottom;
+         ptr < (uintptr_t *)stack_top;
+         ptr++)
     {
-        metadata_t current_metadata = alloc_array[i];
+        mark_object((void *)*ptr);
+    }
 
-        if (current_metadata.usable_size <= sizeof(void *))
-        {
-            continue;
-        }
+    for (void **ptr = (void **)&__data_start;
+         ptr < (void **)&_edata;
+         ptr++)
+    {
+        mark_object(*ptr);
+    }
 
-        uintptr_t block_start = (uintptr_t)current_metadata.data_ptr;
-        uintptr_t block_end = block_start + current_metadata.usable_size;
-
-        /* The thing is, if the compiler is putting any address in memory, it will always align it on it's natural boundary, i.e, sizeof (void *),
-        but in our implementation we can use any aligned memory location to put pointers there as data, so we need to scan the heap byte by byte, while
-        in compiler heap, stacks, static and BSS section we can scan in multiples of 8 (the start of these sections are at least aligned on sizeof (void *)) */
-
-        for (uintptr_t address = block_start;
-             address <= block_end - sizeof(void *);
-             address++)
-        {
-            uintptr_t potential_pointer = *(uintptr_t *)address;
-
-            if (potential_pointer >= heap_start && potential_pointer < heap_end)
-            {
-                printf("Found pointer %zu in heap\n", (uintptr_t)potential_pointer);
-            }
-        }
+    for (void **ptr = (void **)&__bss_start;
+         ptr < (void **)&_end;
+         ptr++)
+    {
+        mark_object(*ptr);
     }
 }
 
-void collect_static()
-{
-    size_t data_section_size = (size_t)_edata - (size_t)__data_start;
-    size_t bss_section_size = (size_t)_end - (size_t)__bss_start;
-
-    if (data_section_size < 8 || bss_section_size < 8)
-    {
-        return;
-    }
-
-    for (uintptr_t current_ptr = (uintptr_t)__data_start; current_ptr <= _edata - sizeof(void *); current_ptr += 8)
-    {
-        uintptr_t may_be_ptr = *(uint64_t *)current_ptr;
-
-        check_if_allocated(may_be_ptr);
-    }
-
-    for (uintptr_t current_ptr = (uintptr_t)__bss_start; current_ptr <= _end - sizeof(void *); current_ptr += 8)
-    {
-        uintptr_t may_be_ptr = *(uint64_t *)current_ptr;
-
-        check_if_allocated(may_be_ptr);
-    }
-}
-
-void handle_error(const char *message)
-{
-    perror(message);
-    exit(EXIT_FAILURE);
-}
-
-int parse_stack_addresses(const char *line, void **stack_base, void **stack_end)
-{
-    char *endptr;
-    *stack_base = (void *)strtoull(line, &endptr, 16);
-
-    if (*endptr != '-')
-    {
-        fprintf(stderr, "Invalid address format\n");
-        return 0;
-    }
-
-    *stack_end = (void *)strtoull(endptr + 1, &endptr, 16);
-
-    if (*stack_base == NULL || *stack_end == NULL || *stack_base >= *stack_end)
-    {
-        fprintf(stderr, "Invalid stack address range\n");
-        return 0;
-    }
-
-    return 1;
-}
-
-int get_thread_stack_addresses(pid_t thread_id, void **stack_base, void **stack_end)
-{
-    char maps_path[MAX_PATH_LENGTH];
-    char line_buffer[LINE_BUFFER_LENGTH];
-
-    snprintf(maps_path, sizeof(maps_path), "/proc/self/task/%d/maps", thread_id);
-
-    FILE *maps_file = fopen(maps_path, "r");
-    if (!maps_file)
-    {
-        fprintf(stderr, "Failed to open maps file for thread %d\n", thread_id);
-        return 0;
-    }
-
-    while (fgets(line_buffer, sizeof(line_buffer), maps_file))
-    {
-        if (strstr(line_buffer, "[stack]"))
-        {
-            line_buffer[strcspn(line_buffer, "\n")] = 0;
-
-            if (parse_stack_addresses(line_buffer, stack_base, stack_end))
-            {
-                fclose(maps_file);
-                return 1;
-            }
-        }
-    }
-
-    fclose(maps_file);
-    return 0;
-}
-
-void collect_thread_info()
-{
-    DIR *task_dir = opendir("/proc/self/task");
-    if (!task_dir)
-    {
-        handle_error("Failed to open /proc/self/task");
-    }
-
-    struct dirent *entry;
-    thread_count = 0;
-
-    while ((entry = readdir(task_dir)) != NULL && thread_count < THREAD_SCAN_LIMIT)
-    {
-        if (entry->d_name[0] == '.')
-        {
-            continue;
-        }
-
-        pid_t thread_id = atoi(entry->d_name);
-        void *stack_base = NULL, *stack_end = NULL;
-
-        if (get_thread_stack_addresses(thread_id, &stack_base, &stack_end))
-        {
-            thread_info_array[thread_count].thread_id = thread_id;
-            thread_info_array[thread_count].stack_base = stack_base;
-            thread_info_array[thread_count].stack_end = stack_end;
-
-            printf("Thread %d: Stack Base at %p, Stack End at %p (Size: %zu bytes)\n",
-                   thread_id, stack_base, stack_end, (char *)stack_end - (char *)stack_base);
-            thread_count++;
-        }
-    }
-
-    closedir(task_dir);
-}
-
-static void get_libc_heap_range(void **start, void **end)
-{
-    char line[LINE_BUFFER_LENGTH];
-    FILE *maps = fopen("/proc/self/maps", "r");
-    if (!maps)
-    {
-        handle_error("Failed to open /proc/self/maps");
-    }
-
-    while (fgets(line, sizeof(line), maps))
-    {
-        if (strstr(line, "[heap]"))
-        {
-            void *heap_start, *heap_end;
-            if (parse_stack_addresses(line, &heap_start, &heap_end))
-            {
-                *start = heap_start;
-                *end = heap_end;
-                fclose(maps);
-                return;
-            }
-        }
-    }
-
-    fclose(maps);
-    *start = NULL;
-    *end = NULL;
-}
-
-static void mark_if_points_to_heap(uintptr_t potential_pointer)
+static void sweep()
 {
     for (size_t i = 0; i < alloc_array_size; i++)
-    {
-        metadata_t *chunk = &alloc_array[i];
-        uintptr_t chunk_start = (uintptr_t)chunk->data_ptr;
-        uintptr_t chunk_end = chunk_start + chunk->usable_size;
-
-        if (potential_pointer >= chunk_start && potential_pointer < chunk_end)
-        {
-            chunk->mark = true;
-            break;
-        }
-    }
-}
-
-void collect_on_personal_heap()
-{
-    for (size_t i = 0; i < alloc_array_size; i++)
-    {
-        alloc_array[i].mark = false;
-    }
-
-    uintptr_t heap_start = (uintptr_t)heap;
-    uintptr_t heap_end = heap_start + (uintptr_t)HEAP_CAPACITY;
-
-    for (size_t i = 0; i < alloc_array_size; i++)
-    {
-        metadata_t current = alloc_array[i];
-        if (current.usable_size <= sizeof(void *))
-            continue;
-
-        for (uintptr_t addr = (uintptr_t)current.data_ptr;
-             addr <= (uintptr_t)current.data_ptr + current.usable_size - sizeof(void *);
-             addr += sizeof(void *))
-        {
-            mark_if_points_to_heap(*(uintptr_t *)addr);
-        }
-    }
-}
-
-void collect_static()
-{
-    for (uintptr_t addr = (uintptr_t)__data_start;
-         addr <= (uintptr_t)_edata - sizeof(void *);
-         addr += sizeof(void *))
-    {
-        mark_if_points_to_heap(*(uintptr_t *)addr);
-    }
-
-    for (uintptr_t addr = (uintptr_t)__bss_start;
-         addr <= (uintptr_t)_end - sizeof(void *);
-         addr += sizeof(void *))
-    {
-        mark_if_points_to_heap(*(uintptr_t *)addr);
-    }
-}
-
-void collect_thread_stack()
-{
-    collect_thread_info();
-
-    for (size_t i = 0; i < thread_count; i++)
-    {
-        for (uintptr_t addr = (uintptr_t)thread_info_array[i].stack_base;
-             addr <= (uintptr_t)thread_info_array[i].stack_end - sizeof(void *);
-             addr += sizeof(void *))
-        {
-            mark_if_points_to_heap(*(uintptr_t *)addr);
-        }
-    }
-}
-
-void collect_libc_heap()
-{
-    void *libc_heap_start, *libc_heap_end;
-    get_libc_heap_range(&libc_heap_start, &libc_heap_end);
-
-    if (!libc_heap_start || !libc_heap_end)
-        return;
-
-    for (uintptr_t addr = (uintptr_t)libc_heap_start;
-         addr <= (uintptr_t)libc_heap_end - sizeof(void *);
-         addr += sizeof(void *))
-    {
-        mark_if_points_to_heap(*(uintptr_t *)addr);
-    }
-}
-
-void sweep_unmarked()
-{
-    for (ssize_t i = alloc_array_size - 1; i >= 0; i--)
     {
         if (!alloc_array[i].mark)
         {
-            add_into_free_array(
-                alloc_array[i].chunk_ptr,
-                alloc_array[i].data_ptr,
-                alloc_array[i].prev_chunk_ptr,
-                alloc_array[i].size,
-                alloc_array[i].usable_size,
-                alloc_array[i].current_alignment);
-            remove_from_alloc_array(i);
+            heap_free(alloc_array[i].data_ptr);
+            i--;
+        }
+        else
+        {
+            alloc_array[i].mark = false;
         }
     }
-    defragment_heap();
+
+    void (*sweep_bin)(void *) = heap_free;
+
+    for (size_t i = 0; i < alloc_bin_8_size; i++)
+    {
+        if (!alloc_bin_8[i].mark)
+        {
+            sweep_bin(alloc_bin_8[i].data_ptr);
+            i--;
+        }
+        else
+        {
+            alloc_bin_8[i].mark = false;
+        }
+    }
+
+    for (size_t i = 0; i < alloc_bin_16_size; i++)
+    {
+        if (!alloc_bin_16[i].mark)
+        {
+            sweep_bin(alloc_bin_16[i].data_ptr);
+            i--;
+        }
+        else
+        {
+            alloc_bin_16[i].mark = false;
+        }
+    }
+
+    for (size_t i = 0; i < alloc_bin_32_size; i++)
+    {
+        if (!alloc_bin_32[i].mark)
+        {
+            sweep_bin(alloc_bin_32[i].data_ptr);
+            i--;
+        }
+        else
+        {
+            alloc_bin_32[i].mark = false;
+        }
+    }
 }
 
-void garbage_collect()
+void gc_collect()
 {
-    collect_on_personal_heap();
-    collect_static();
-    collect_thread_stack();
-    collect_libc_heap();
+    static bool collecting = false;
+    if (collecting)
+        return;
+    collecting = true;
 
-    sweep_unmarked();
+    mark_roots();
+
+    sweep();
+
+    collecting = false;
 }
-
-#undef MAX_PATH_LENGTH
-#undef THREAD_SCAN_LIMIT
-#undef MAX_FILE_LENGTH
-#undef LINE_BUFFER_LENGTH
 
 #endif
 
@@ -1000,7 +860,7 @@ void heap_free(void *ptr)
             chunk->current_alignment);
         free_array[free_array_size - 1].alloc_type = ALLOC_TYPE_HEAP;
         remove_from_alloc_array(alloc_index);
-        if (!num_of_free_called_on_heap & (FREE_DEFRAG_CUTOFF - 1))
+        if (!num_of_free_called_on_heap && (FREE_DEFRAG_CUTOFF - 1))
         {
             defragment_heap();
         }
@@ -1089,8 +949,6 @@ void *heap_realloc(void *ptr, size_t new_size, alignment_t new_alignment)
 #undef SPLIT_CUTOFF
 
 #undef FREE_DEFRAG_CUTOFF // must be a power of 2
-
-#undef THREAD_LOCAL
 
 #undef BIN_8_SIZE
 #undef BIN_16_SIZE
